@@ -1,0 +1,145 @@
+#include "I2Cdev.h"
+#include "MPU6050.h"
+#include "Wire.h"
+#include "SSD1306.h"
+#include <WiFi.h>
+#include <FirebaseESP32.h>
+
+// Firebase Configuration
+#define FIREBASE_HOST "your-firebase-database.firebaseio.com" // Replace with your Firebase host
+#define FIREBASE_AUTH "your-firebase-databaseecret"         // Replace with your Firebase database secret
+
+// WiFi Configuration
+#define WIFI_SSID "your-SSID"                                // Replace with your WiFi SSID
+#define WIFI_PASSWORD "your-password"                       // Replace with your WiFi password
+
+FirebaseData firebaseData;
+String tag ="IOTLAB/MY_APP/STATUS"
+MPU6050 mpu;
+SSD1306 display(0x3c, 21, 22);
+
+float baseline[3];
+float features[3];
+float motion_threshold = 0.7;
+
+String position;
+
+void OLEDInit();
+void connectWiFi();
+void mpu_read(float *ax, float *ay, float *az);
+void calibrate();
+void mpu_record();
+
+const int buzzerPin = 32;
+
+void setup() {
+    pinMode(buzzerPin, OUTPUT);
+    digitalWrite(buzzerPin, LOW);
+
+    Wire.begin();
+    Serial.begin(115200);
+
+    connectWiFi();
+    Firebase.begin(FIREBASE_HOST, FIREBASE_AUTH);
+
+    mpu.initialize();
+    calibrate();  
+    OLEDInit();  
+}
+
+void loop() {
+    float ax, ay, az; 
+    mpu_read(&ax, &ay, &az);
+    ax = ax - baseline[0];
+    ay = ay - baseline[1];
+    az = az - baseline[2];
+   
+    mpu_record();
+    
+    delay(2000);
+}
+
+void connectWiFi() {
+    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+    while (WiFi.status() != WL_CONNECTED) {
+        delay(1000);
+        Serial.println("Connecting to WiFi...");
+    }
+    Serial.println("Connected to WiFi.");
+}
+
+void mpu_read(float *ax, float *ay, float *az) {
+    int16_t _ax, _ay, _az, _gx, _gy, _gz;
+
+    mpu.getMotion6(&_ax, &_ay, &_az, &_gx, &_gy, &_gz);
+    *ax = _ax / 16384.0;
+    *ay = _ay / 16384.0;
+    *az = _az / 16384.0;        
+}
+
+void calibrate() {
+    float ax, ay, az;
+    for (int i = 0; i < 10; i++) {
+        mpu_read(&ax, &ay, &az);
+        delay(100);
+    }
+    baseline[0] = ax;
+    baseline[1] = ay;
+    baseline[2] = az;
+}
+
+void mpu_record() {
+    float ax, ay, az;
+    float aax, aay, aaz;
+    String position;
+
+    mpu_read(&ax, &ay, &az);
+    ax = ax - baseline[0];
+    ay = ay - baseline[1];
+    az = az - baseline[2];
+
+    features[0] = ax;
+    features[1] = ay;
+    features[2] = az;
+
+    aax = fabs(ax);
+    aay = fabs(ay);
+    aaz = fabs(az);
+
+    position = "Upright";
+    if (aax > motion_threshold) {
+        if (ax > 0)
+            position = "Left";
+        else
+            position = "Right";
+    }
+    if (aay > motion_threshold) {
+        if (ay > 0)
+            position = "Backward";
+        else
+            position = "Forward";
+    }
+
+    if (aaz > motion_threshold && aaz > 1.5) {
+        position = "Earthquake!";
+        digitalWrite(buzzerPin, HIGH);
+        
+        // Send alert to Firebase
+        Firebase.setString(firebaseData, tag, "Earthquake Detected");
+        
+        delay(5000); // Keep buzzer on for 5 seconds
+        digitalWrite(buzzerPin, LOW);
+    }
+
+    Serial.println(position);
+
+    display.clear();
+    display.drawString(30, 0, "Position:");
+    display.drawString(30, 30, position);
+    display.display();
+}
+
+void OLEDInit() {
+    display.init();
+    display.setFont(ArialMT_Plain_16);
+}
